@@ -133,6 +133,12 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:10;background:va
 .check{width:24px;height:24px;border-radius:7px;border:2px solid var(--rule);display:grid;place-items:center;margin-top:1px}
 .bitem.done .check{background:var(--good);border-color:var(--good);color:var(--surface)}
 .check svg{width:16px;height:16px}
+button.check{background:none;padding:0;cursor:pointer;color:inherit;font:inherit;position:relative}
+button.check::before{content:"";position:absolute;inset:-10px}
+button.check:focus-visible{outline:3px solid var(--accent,#2b6cb0);outline-offset:2px}
+button.check.pending{opacity:.5;cursor:progress}
+.bitem.done button.check{background:var(--good);border-color:var(--good);color:var(--surface)}
+.berr{margin:8px 0;padding:10px 12px;border-radius:10px;border:1px solid #c0392b;color:#c0392b;font-size:.9rem}
 .bitem .meta{font-size:.84rem}
 .bitem p{margin:6px 0 0;font-size:.9rem}
 .bitem a{font-weight:700}
@@ -178,6 +184,9 @@ footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:cent
 const CONFIG = {
   SHEET_ID: "16wEfhTaU8yRq5if45zqaGMs3QZ_rW0LKf09371T9dqM",
   API_KEY:  "AIzaSyDi_oD0HsiTqUsUq00Vf_aURxjLnI83tl4",
+  // Apps Script web app URL (ends in /exec) that lets the To book checkboxes write back to the sheet.
+  // Leave empty to keep the boxes view-only.
+  WRITE_URL: "https://script.google.com/macros/s/AKfycbzOqTWmR9sIrcOrQ6AMUoDVYxbjJzLLd23CWeC_tdMwlOap1XNKh1rlZO5RkULV4-o4/exec",
   TABS: { plan: "Vienna plan v3", info: "Explanations", book: "Book in advance" },
   TIMEZONE: "Europe/Vienna",
   YEAR: 2026,
@@ -366,8 +375,8 @@ function parse(raw) {
   const head = (bk[0] || []).map(txt).map(s => s.toLowerCase());
   const col = (...names) => head.findIndex(h => names.some(n => h.startsWith(n)));
   const ci = { pr: col("priority"), what: col("what"), when: col("when"), where: col("where"), cost: col("approx", "cost"), done: col("done"), notes: col("notes") };
-  const bookings = bk.slice(1).map(r => ({
-    priority: txt(r[ci.pr]), what: txt(r[ci.what]), when: txt(r[ci.when]),
+  const bookings = bk.slice(1).map((r, i) => ({
+    row: i + 2, priority: txt(r[ci.pr]), what: txt(r[ci.what]), when: txt(r[ci.when]),
     where: txt(r[ci.where]), whereUrl: linkOf(r[ci.where]), cost: txt(r[ci.cost]),
     done: !!r[ci.done]?.effectiveValue?.boolValue, hasBox: r[ci.done]?.effectiveValue?.boolValue !== undefined, notes: txt(r[ci.notes]),
   })).filter(b => b.what);
@@ -533,17 +542,42 @@ function renderBook() {
   for (const x of b) { let g = groups.find(g => g.name === x.priority); if (!g) groups.push(g = { name: x.priority, items: [] }); g.items.push(x); }
   sec.replaceChildren(
     el("h2", {}, "To book"),
-    el("div", { class: "meta" }, `${done} of ${boxes.length} done · tick the boxes in the sheet`),
+    el("div", { class: "meta" }, `${done} of ${boxes.length} done · ${canWrite() ? "tap a box to tick it in the sheet" : "tick the boxes in the sheet"}`),
+    BOOK_ERR ? el("div", { class: "berr", role: "alert" }, BOOK_ERR) : null,
     el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(boxes.length), "aria-valuenow": String(done) },
       el("i", { style: `width:${boxes.length ? (100 * done / boxes.length) : 0}%` })),
     ...groups.flatMap(g => [el("div", { class: "grp" }, g.name || "Other"), ...g.items.map(x =>
       el("div", { class: "bitem" + (x.done ? " done" : "") },
-        x.hasBox ? el("span", { class: "check", "aria-label": x.done ? "Done" : "Not done yet" }, x.done ? svg(ICON.check) : null) : el("span"),
+        x.hasBox ? (canWrite()
+          ? el("button", { type: "button", class: "check" + (x.pending ? " pending" : ""), role: "checkbox", "aria-checked": String(x.done),
+              "aria-label": x.what, disabled: x.pending, onclick: () => toggleBooking(x) }, x.done ? svg(ICON.check) : null)
+          : el("span", { class: "check", "aria-label": x.done ? "Done" : "Not done yet" }, x.done ? svg(ICON.check) : null)) : el("span"),
         el("div", { style: "min-width:0" },
           el("div", { class: "ttl" }, x.what),
           el("div", { class: "meta" }, x.when ? el("span", {}, x.when) : null, x.cost ? el("span", {}, x.cost) : null,
             x.whereUrl ? el("a", { href: x.whereUrl, target: "_blank", rel: "noopener" }, x.where + " ›") : x.where ? el("span", {}, x.where) : null),
           x.notes ? el("p", {}, x.notes) : null)))]));
+}
+
+let BOOK_ERR = "";
+const canWrite = () => !!CONFIG.WRITE_URL && CONFIG.WRITE_URL.includes("/exec");
+async function toggleBooking(x) {
+  if (x.pending) return;
+  const want = !x.done;
+  x.done = want; x.pending = true; BOOK_ERR = ""; renderBook();
+  try {
+    // text/plain keeps this a "simple" request, so the browser doesn't need a CORS preflight
+    const res = await fetch(CONFIG.WRITE_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ row: x.row, what: x.what, done: want }) });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || "Sheet refused the change");
+    x.pending = false; renderBook();
+    load(); // refresh the saved copy so the change survives offline
+  } catch (e) {
+    x.done = !want; x.pending = false;
+    BOOK_ERR = `Couldn't update the sheet: ${e.message}. Try again, or tick it in the sheet.`;
+    renderBook();
+  }
 }
 
 function setView(v) {
