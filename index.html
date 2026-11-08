@@ -540,7 +540,7 @@ function renderBook() {
   const boxes = b.filter(x => x.hasBox), done = boxes.filter(x => x.done).length;
   const groups = [];
   for (const x of b) { let g = groups.find(g => g.name === x.priority); if (!g) groups.push(g = { name: x.priority, items: [] }); g.items.push(x); }
-  sec.replaceChildren(
+  sec.replaceChildren(...[
     el("h2", {}, "To book"),
     el("div", { class: "meta" }, `${done} of ${boxes.length} done · ${canWrite() ? "tap a box to tick it in the sheet" : "tick the boxes in the sheet"}`),
     BOOK_ERR ? el("div", { class: "berr", role: "alert" }, BOOK_ERR) : null,
@@ -556,7 +556,7 @@ function renderBook() {
           el("div", { class: "ttl" }, x.what),
           el("div", { class: "meta" }, x.when ? el("span", {}, x.when) : null, x.cost ? el("span", {}, x.cost) : null,
             x.whereUrl ? el("a", { href: x.whereUrl, target: "_blank", rel: "noopener" }, x.where + " ›") : x.where ? el("span", {}, x.where) : null),
-          x.notes ? el("p", {}, x.notes) : null)))]));
+          x.notes ? el("p", {}, x.notes) : null)))])].filter(Boolean)); // replaceChildren would print null as text
 }
 
 let BOOK_ERR = "";
