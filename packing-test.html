@@ -242,11 +242,26 @@ function apiUrl() {
   p.append("ranges", `'${CONFIG.TABS.plan}'!A1:I100`);
   p.append("ranges", `'${CONFIG.TABS.info}'!A1:H400`);
   p.append("ranges", `'${CONFIG.TABS.book}'!A1:G80`);
-  p.append("ranges", `'${CONFIG.TABS.pack}'!A1:H150`);
   p.set("includeGridData", "true");
   p.set("fields", "sheets(properties(title),merges,data(rowData(values(formattedValue,hyperlink,note,userEnteredValue/formulaValue,effectiveValue/boolValue,effectiveFormat/backgroundColor))))");
   p.set("key", CONFIG.API_KEY);
   return `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}?${p}`;
+}
+// The packing list is fetched on its own, so a missing or renamed Packing tab can't break the itinerary.
+function packUrl() {
+  const p = new URLSearchParams();
+  p.append("ranges", `'${CONFIG.TABS.pack}'!A1:H150`);
+  p.set("includeGridData", "true");
+  p.set("fields", "sheets(properties(title),data(rowData(values(formattedValue,effectiveValue/boolValue))))");
+  p.set("key", CONFIG.API_KEY);
+  return `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}?${p}`;
+}
+async function fetchPacking() {
+  try {
+    const res = await fetch(packUrl(), { cache: "no-store" });
+    if (!res.ok) return [];
+    return (await res.json()).sheets || [];
+  } catch { return []; }
 }
 function readCache() { try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch { return null; } }
 function writeCache(raw) { try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), raw })); } catch {} }
@@ -268,6 +283,7 @@ async function load(manual) {
       throw Object.assign(new Error(msg), { code: res.status });
     }
     const raw = await res.json();
+    raw.sheets.push(...await fetchPacking());
     MODEL = parse(raw);
     writeCache(raw);
     SOURCE = { kind: "live", at: Date.now() };
