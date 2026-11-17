@@ -72,6 +72,8 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:10;background:va
 .day .dl b{font:600 1.05rem/1.1 var(--font-display);text-transform:uppercase;letter-spacing:.03em}
 .day .dl span{font-size:.78rem;color:var(--muted)}
 .day.today .dl span{color:var(--accent);font-weight:700}
+.day.over{opacity:.5;filter:grayscale(1)}
+.day.over[aria-selected="true"]{opacity:.8}
 
 /* banners */
 .notice{border:1px solid var(--rule);background:var(--surface);border-radius:14px;padding:12px 14px;margin-block:4px 12px;font-size:.92rem}
@@ -92,7 +94,10 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:10;background:va
 .st .t{font:600 1.1rem/1.25 var(--font-display);font-variant-numeric:tabular-nums;text-align:right;padding-top:9px}
 .st .t small{display:block;font:500 .82rem/1.2 var(--font-display);color:var(--muted)}
 .st .dot{position:absolute;left:66px;top:15px;width:20px;height:20px;border-radius:50%;background:var(--surface);border:5px solid var(--line);z-index:1}
-.st.past{opacity:.55}
+.st.past .card{filter:grayscale(1);opacity:.55}
+.st.past .t{opacity:.5}
+.st.past .dot{border-color:var(--rule)}
+.exp{font:700 .7rem/1 var(--font-display);letter-spacing:.1em;text-transform:uppercase;border:1px solid currentColor;border-radius:999px;padding:3px 7px}
 .st.current .dot{background:var(--line);box-shadow:0 0 0 6px color-mix(in srgb,var(--line) 25%,transparent)}
 .card{min-width:0;background:var(--surface);border:1px solid var(--rule);border-radius:14px;overflow:hidden}
 .card>button{all:unset;box-sizing:border-box;display:block;width:100%;padding:10px 12px;cursor:pointer}
@@ -116,7 +121,7 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:10;background:va
 .leg .ico{position:absolute;left:62px;top:9px;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--bg);border:2px solid var(--line);z-index:1}
 .leg .ico svg{width:15px;height:15px}
 .leg a{color:var(--fg);font-weight:700;white-space:nowrap}
-.leg.past{opacity:.55}
+.leg.past{opacity:.45;filter:grayscale(1)}
 .conn{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:8px;font-size:.8rem;color:var(--muted);padding:0 12px 10px}
 .conn svg{width:14px;height:14px}
 .muted-row .card{background:transparent;border-style:dashed}
@@ -422,7 +427,10 @@ function parse(raw) {
 }
 
 /* ---------------------------- time ---------------------------- */
+// Preview: add ?at=2026-11-27T14:30 to the address to see the page as it will look at that Vienna time.
+const PREVIEW_AT = (() => { const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{1,2}):(\d{2})$/.exec(new URLSearchParams(location.search).get("at") || ""); return m ? m.slice(1).map(Number) : null; })();
 function viennaNow() {
+  if (PREVIEW_AT) { const [y, mo, d, h, mi] = PREVIEW_AT; return { date: new Date(y, mo - 1, d), mins: h * 60 + mi }; }
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: CONFIG.TIMEZONE, year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", hourCycle: "h23" })
     .formatToParts(new Date()).map(p => [p.type, p.value]));
   return { date: new Date(+parts.year, +parts.month - 1, +parts.day), mins: +parts.hour * 60 + +parts.minute };
@@ -482,7 +490,8 @@ function renderDays() {
   const today = dkey(viennaNow().date);
   $("#days").replaceChildren(...MODEL.days.map(d => {
     const isToday = dkey(d.date) === today;
-    const b = el("button", { class: "day" + (isToday ? " today" : ""), type: "button", "aria-selected": String(d.col === current),
+    const over = d.items.length && dayClock(d) >= Math.max(...d.items.map(i => i.end));
+    const b = el("button", { class: "day" + (isToday ? " today" : "") + (over ? " over" : ""), type: "button", "aria-selected": String(d.col === current),
       onclick: () => { current = d.col; UI.day = d.col; writeUI(UI); renderDays(); window.scrollTo({ top: 0 }); } },
       el("span", { class: "badge", style: `background:${d.line.c}` }, d.line.b),
       el("span", { class: "dl" }, el("b", {}, d.date.toLocaleDateString("en-GB", { weekday: "short" }) + " " + d.date.getDate()),
@@ -533,7 +542,7 @@ function renderDay(day) {
 
   const list = el("ol", { class: "tl" });
   for (const it of day.items) {
-    const past = live && clock >= it.end, cur = nowIt && nowIt.id === it.id;
+    const past = clock >= it.end, cur = nowIt && nowIt.id === it.id;
     const catVar = `var(--c-${it.cat in CAT_LABEL ? it.cat : "other"})`;
     if (it.cat === "transport") {
       list.append(el("li", { class: "leg" + (past ? " past" : "") },
@@ -562,7 +571,7 @@ function renderDay(day) {
           e.currentTarget.setAttribute("aria-expanded", String(now)); document.getElementById(bodyId).hidden = !now; } },
         el("div", { class: "ttl", dir: "auto" }, it.label),
         el("div", { class: "meta" }, el("span", { class: "chip", style: `--cat:${catVar}` }, CAT_LABEL[it.cat] || "Plan"),
-          el("span", {}, dur(it.end - it.start)))),
+          el("span", {}, dur(it.end - it.start)), past ? el("span", { class: "exp" }, "Expired") : null)),
       travelLine(it),
       el("div", { class: "body", id: bodyId, hidden: !open }, ...bodyKids));
     list.append(el("li", { class: "st" + (past ? " past" : "") + (cur ? " current" : "") + (["israel", "flight"].includes(it.cat) ? " muted-row" : "") },
