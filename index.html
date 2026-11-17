@@ -142,6 +142,11 @@ button.check.pending{opacity:.5;cursor:progress}
 .bitem .meta{font-size:.84rem}
 .bitem p{margin:6px 0 0;font-size:.9rem}
 .bitem a{font-weight:700}
+.grp .n{float:right;letter-spacing:.06em}
+.qty{display:inline-flex;gap:4px;align-items:center;padding:2px 7px;border-radius:999px;background:var(--surface-2);color:var(--fg);font-weight:600}
+.pk-tools{display:flex;justify-content:flex-end;margin-top:-6px}
+.pk-tools button{border:1px solid var(--rule);background:var(--surface);color:var(--fg);border-radius:999px;padding:6px 12px;font:600 .85rem/1 var(--font-display);cursor:pointer}
+.pk-tools button[aria-pressed="true"]{background:var(--fg);color:var(--surface);border-color:var(--fg)}
 footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:center}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -164,6 +169,7 @@ footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:cent
     <div class="views" role="tablist">
       <button role="tab" id="tabDays" aria-selected="true" type="button">Itinerary</button>
       <button role="tab" id="tabBook" aria-selected="false" type="button">To book</button>
+      <button role="tab" id="tabPack" aria-selected="false" type="button">Packing</button>
     </div>
   </div>
 </header>
@@ -176,6 +182,7 @@ footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:cent
     <div id="dayview"></div>
   </section>
   <section id="viewBook" class="bk" hidden></section>
+  <section id="viewPack" class="bk" hidden></section>
   <footer id="foot"></footer>
 </main>
 
@@ -187,7 +194,7 @@ const CONFIG = {
   // Apps Script web app URL (ends in /exec) that lets the To book checkboxes write back to the sheet.
   // Leave empty to keep the boxes view-only.
   WRITE_URL: "https://script.google.com/macros/s/AKfycbzOqTWmR9sIrcOrQ6AMUoDVYxbjJzLLd23CWeC_tdMwlOap1XNKh1rlZO5RkULV4-o4/exec",
-  TABS: { plan: "Vienna plan v3", info: "Explanations", book: "Book in advance" },
+  TABS: { plan: "Vienna plan v3", info: "Explanations", book: "Book in advance", pack: "Packing" },
   TIMEZONE: "Europe/Vienna",
   YEAR: 2026,
 };
@@ -240,6 +247,22 @@ function apiUrl() {
   p.set("key", CONFIG.API_KEY);
   return `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}?${p}`;
 }
+// The packing list is fetched on its own, so a missing or renamed Packing tab can't break the itinerary.
+function packUrl() {
+  const p = new URLSearchParams();
+  p.append("ranges", `'${CONFIG.TABS.pack}'!A1:H150`);
+  p.set("includeGridData", "true");
+  p.set("fields", "sheets(properties(title),data(rowData(values(formattedValue,effectiveValue/boolValue))))");
+  p.set("key", CONFIG.API_KEY);
+  return `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}?${p}`;
+}
+async function fetchPacking() {
+  try {
+    const res = await fetch(packUrl(), { cache: "no-store" });
+    if (!res.ok) return [];
+    return (await res.json()).sheets || [];
+  } catch { return []; }
+}
 function readCache() { try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch { return null; } }
 function writeCache(raw) { try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), raw })); } catch {} }
 function readUI() { try { return JSON.parse(localStorage.getItem(UI_KEY) || "{}"); } catch { return {}; } }
@@ -260,6 +283,7 @@ async function load(manual) {
       throw Object.assign(new Error(msg), { code: res.status });
     }
     const raw = await res.json();
+    raw.sheets.push(...await fetchPacking());
     MODEL = parse(raw);
     writeCache(raw);
     SOURCE = { kind: "live", at: Date.now() };
@@ -381,7 +405,20 @@ function parse(raw) {
     done: !!r[ci.done]?.effectiveValue?.boolValue, hasBox: r[ci.done]?.effectiveValue?.boolValue !== undefined, notes: txt(r[ci.notes]),
   })).filter(b => b.what);
 
-  return { days, hotelText, bookings };
+  // packing list: Category | Item | <one quantity column per person> | Packed? | Notes
+  const pk = rows(sheetByTitle(raw, CONFIG.TABS.pack));
+  const ph = (pk[0] || []).map(txt), phl = ph.map(s => s.toLowerCase());
+  const pc = n => phl.findIndex(h => h.startsWith(n));
+  const pi = { cat: pc("categ"), what: pc("item"), done: pc("packed"), notes: pc("notes") };
+  const people = [];
+  if (pi.what >= 0 && pi.done > pi.what) for (let c = pi.what + 1; c < pi.done; c++) if (ph[c]) people.push({ name: ph[c], col: c });
+  const packing = pi.what < 0 ? [] : pk.slice(1).map((r, i) => ({
+    row: i + 2, cat: txt(r[pi.cat]), what: txt(r[pi.what]), notes: txt(r[pi.notes]),
+    qty: people.map(p => ({ name: p.name, v: txt(r[p.col]) })).filter(q => q.v),
+    done: !!r[pi.done]?.effectiveValue?.boolValue, hasBox: r[pi.done]?.effectiveValue?.boolValue !== undefined,
+  })).filter(x => x.what);
+
+  return { days, hotelText, bookings, packing };
 }
 
 /* ---------------------------- time ---------------------------- */
@@ -400,10 +437,10 @@ function dayClock(day) {
 /* ---------------------------- render ---------------------------- */
 function render() {
   renderStatus();
-  if (!MODEL) { $("#days").replaceChildren(); $("#dayview").replaceChildren(); $("#nowbox").replaceChildren(); $("#viewBook").replaceChildren(); return; }
+  if (!MODEL) { $("#days").replaceChildren(); $("#dayview").replaceChildren(); $("#nowbox").replaceChildren(); $("#viewBook").replaceChildren(); $("#viewPack").replaceChildren(); return; }
   const hotel = MODEL.hotelText.split("\n")[0];
   $("#sub").textContent = (hotel ? hotel + " · " : "") + rangeText();
-  renderDays(); renderBook();
+  renderDays(); renderBook(); renderPack();
   $("#foot").replaceChildren(el("span", {}, "Edits come from the Google Sheet. Tap ", el("b", {}, "↻"), " to reload."));
 }
 function rangeText() {
@@ -559,7 +596,13 @@ function renderBook() {
           x.notes ? el("p", {}, x.notes) : null)))])].filter(Boolean)); // replaceChildren would print null as text
 }
 
-let BOOK_ERR = "";
+let BOOK_ERR = "", PACK_ERR = "";
+async function writeBack(body) {
+  // text/plain keeps this a "simple" request, so the browser doesn't need a CORS preflight
+  const res = await fetch(CONFIG.WRITE_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body) });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || "Sheet refused the change");
+}
 const canWrite = () => !!CONFIG.WRITE_URL && CONFIG.WRITE_URL.includes("/exec");
 async function toggleBooking(x) {
   if (x.pending) return;
@@ -580,14 +623,64 @@ async function toggleBooking(x) {
   }
 }
 
+function renderPack() {
+  const sec = $("#viewPack"), list = MODEL.packing || [];
+  if (!list.length) {
+    sec.replaceChildren(el("h2", {}, "Packing"), el("div", { class: "empty" }, `Add a "${CONFIG.TABS.pack}" tab to the sheet to see the packing list here.`));
+    return;
+  }
+  const boxes = list.filter(x => x.hasBox), done = boxes.filter(x => x.done).length, hide = !!UI.hidePacked;
+  const groups = [];
+  for (const x of list) { let g = groups.find(g => g.name === x.cat); if (!g) groups.push(g = { name: x.cat, items: [] }); g.items.push(x); }
+  const box = x => x.hasBox ? (canWrite()
+      ? el("button", { type: "button", class: "check" + (x.pending ? " pending" : ""), role: "checkbox", "aria-checked": String(x.done),
+          "aria-label": x.what, disabled: x.pending, onclick: () => togglePack(x) }, x.done ? svg(ICON.check) : null)
+      : el("span", { class: "check", "aria-label": x.done ? "Packed" : "Not packed yet" }, x.done ? svg(ICON.check) : null)) : el("span");
+  sec.replaceChildren(...[
+    el("h2", {}, "Packing"),
+    el("div", { class: "meta" }, `${done} of ${boxes.length} packed · ${canWrite() ? "tap a box to tick it in the sheet" : "tick the boxes in the sheet"}`),
+    PACK_ERR ? el("div", { class: "berr", role: "alert" }, PACK_ERR) : null,
+    el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(boxes.length), "aria-valuenow": String(done) },
+      el("i", { style: `width:${boxes.length ? (100 * done / boxes.length) : 0}%` })),
+    el("div", { class: "pk-tools" }, el("button", { type: "button", "aria-pressed": String(hide),
+      onclick: () => { UI.hidePacked = !hide; writeUI(UI); renderPack(); } }, hide ? "Show packed items" : "Hide packed items")),
+    ...groups.flatMap(g => {
+      const gb = g.items.filter(x => x.hasBox), gd = gb.filter(x => x.done).length;
+      const shown = hide ? g.items.filter(x => !x.done || x.pending) : g.items;
+      if (!shown.length) return [];
+      return [el("div", { class: "grp" }, g.name || "Other", gb.length ? el("span", { class: "n" }, `${gd}/${gb.length}`) : null),
+        ...shown.map(x => el("div", { class: "bitem" + (x.done ? " done" : "") }, box(x),
+          el("div", { style: "min-width:0" },
+            el("div", { class: "ttl" }, x.what),
+            x.qty.length ? el("div", { class: "meta" }, ...x.qty.map(q => el("span", { class: "qty" }, `${q.name} ${/^\d+$/.test(q.v) ? "×" + q.v : q.v}`))) : null,
+            x.notes ? el("p", {}, x.notes) : null)))];
+    })].filter(Boolean)); // replaceChildren would print null as text
+}
+async function togglePack(x) {
+  if (x.pending) return;
+  const want = !x.done;
+  x.done = want; x.pending = true; PACK_ERR = ""; renderPack();
+  try {
+    await writeBack({ tab: CONFIG.TABS.pack, row: x.row, what: x.what, done: want });
+    x.pending = false; renderPack();
+    load(); // refresh the saved copy so the change survives offline
+  } catch (e) {
+    x.done = !want; x.pending = false;
+    PACK_ERR = `Couldn't update the sheet: ${e.message}. Try again, or tick it in the sheet.`;
+    renderPack();
+  }
+}
+
 function setView(v) {
-  const days = v !== "book";
-  $("#tabDays").setAttribute("aria-selected", String(days)); $("#tabBook").setAttribute("aria-selected", String(!days));
-  $("#viewDays").hidden = !days; $("#viewBook").hidden = days;
+  if (!["days", "book", "pack"].includes(v)) v = "days";
+  for (const [k, tab, view] of [["days", "#tabDays", "#viewDays"], ["book", "#tabBook", "#viewBook"], ["pack", "#tabPack", "#viewPack"]]) {
+    $(tab).setAttribute("aria-selected", String(v === k)); $(view).hidden = v !== k;
+  }
   UI.view = v; writeUI(UI);
 }
 $("#tabDays").onclick = () => setView("days");
 $("#tabBook").onclick = () => setView("book");
+$("#tabPack").onclick = () => setView("pack");
 $("#refresh").onclick = () => load(true);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && SOURCE && Date.now() - (SOURCE.at || 0) > 5 * 60e3) load(); });
 setInterval(() => { if (MODEL && !document.hidden) renderDay(MODEL.days.find(d => d.col === current)); }, 60e3);
