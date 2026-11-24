@@ -59,7 +59,7 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:10;background:va
 .spin svg{animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .views{display:flex;gap:6px;padding-block:0 10px}
-.views button{flex:1;border:0;background:transparent;border-bottom:3px solid transparent;padding:6px 4px 7px;font:600 1.05rem/1 var(--font-display);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);cursor:pointer}
+.views button{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:0;background:transparent;border-bottom:3px solid transparent;padding:6px 2px 7px;font:600 clamp(.82rem,3.6vw,1.05rem)/1 var(--font-display);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);cursor:pointer}
 .views button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
 
 /* day strip */
@@ -152,6 +152,16 @@ button.check.pending{opacity:.5;cursor:progress}
 .pk-tools{display:flex;justify-content:flex-end;margin-top:-6px}
 .pk-tools button{border:1px solid var(--rule);background:var(--surface);color:var(--fg);border-radius:999px;padding:6px 12px;font:600 .85rem/1 var(--font-display);cursor:pointer}
 .pk-tools button[aria-pressed="true"]{background:var(--fg);color:var(--surface);border-color:var(--fg)}
+/* phrases */
+.ph{display:grid;grid-template-columns:44px 1fr;gap:4px 12px;align-items:center;background:var(--surface);border:1px solid var(--rule);border-radius:14px;padding:10px 12px;margin-bottom:8px}
+.ph .play{width:44px;height:44px;border-radius:50%;border:0;background:var(--accent);color:var(--accent-fg);display:grid;place-items:center;cursor:pointer;grid-row:span 2}
+.ph .play svg{width:20px;height:20px}
+.ph .play.on{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 30%,transparent)}
+.ph .de{font-weight:700;font-size:1.05rem;overflow-wrap:anywhere}
+.ph .say{font:600 .95rem/1.3 var(--font-display);color:var(--accent);letter-spacing:.02em}
+.ph .say b{font-weight:800}
+.ph .mean{grid-column:2;font-size:.86rem;color:var(--muted)}
+.ph-note{font-size:.88rem;color:var(--muted);margin:4px 0 10px}
 footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:center}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -175,6 +185,7 @@ footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:cent
       <button role="tab" id="tabDays" aria-selected="true" type="button">Itinerary</button>
       <button role="tab" id="tabBook" aria-selected="false" type="button">To book</button>
       <button role="tab" id="tabPack" aria-selected="false" type="button">Packing</button>
+      <button role="tab" id="tabPhr" aria-selected="false" type="button">Phrases</button>
     </div>
   </div>
 </header>
@@ -188,6 +199,7 @@ footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:cent
   </section>
   <section id="viewBook" class="bk" hidden></section>
   <section id="viewPack" class="bk" hidden></section>
+  <section id="viewPhr" class="bk" hidden lang="en"></section>
   <footer id="foot"></footer>
 </main>
 
@@ -680,9 +692,157 @@ async function togglePack(x) {
   }
 }
 
+/* ---------------------------- phrases ---------------------------- */
+// [German, how to say it (CAPS = stress), meaning, optional text to speak instead]
+const PHRASES = [
+  ["Sound rules", "Learn these 10 and you can read almost any sign", [
+    ["ei", "\"eye\" · Drei → DRY", "Drei"],
+    ["ie", "\"ee\" · Wien → VEEN", "Wien"],
+    ["w", "\"v\" · Wollzeile → VOLL-tsy-leh", "Wollzeile"],
+    ["z", "\"ts\" · Zucker → TSOO-ker", "Zucker"],
+    ["sch", "\"sh\" · Schnitzel → SHNIT-sel", "Schnitzel"],
+    ["st- / sp- at the start", "\"sht\" / \"shp\" · Stephansdom → SHTEH-fahns-dohm", "Stephansdom"],
+    ["ß", "\"ss\" · Straße → SHTRAH-seh", "Straße"],
+    ["au", "\"ow\" · Haus → HOWSS", "Haus"],
+    ["eu / äu", "\"oy\" · Freud → FROYD", "Freud"],
+    ["v", "\"f\" · Volksgarten → FOLKS-gar-ten", "Volksgarten"],
+    ["ä / ö / ü", "ä = \"eh\"; ö, ü = \"eh\"/\"ee\" with rounded lips · Schönbrunn → SHURN-broon", "Schönbrunn"],
+  ], true],
+  ["Basics", "", [
+    ["Grüß Gott", "groos GOT", "Hello – the Austrian one, everyone says it"],
+    ["Servus", "SAIR-voos", "Hi / bye (casual)"],
+    ["Baba!", "BAH-bah", "Bye! (very Viennese, casual)"],
+    ["Danke schön", "DAHN-keh shurn", "Thank you very much"],
+    ["Bitte", "BIT-teh", "Please / you're welcome / here you go"],
+    ["Entschuldigung", "ent-SHOOL-dee-goong", "Excuse me / sorry"],
+    ["Sprechen Sie Englisch?", "SHPREH-khen zee ENG-lish", "Do you speak English?"],
+    ["Ja / Nein", "yah / nine", "Yes / no", "Ja. Nein."],
+    ["Wo ist …?", "voh ist", "Where is …?", "Wo ist der Ausgang?"],
+    ["Ich verstehe nicht", "ikh fer-SHTAY-eh nikht", "I don't understand"],
+  ]],
+  ["Restaurants, cafés & markets", "", [
+    ["Einen Tisch für zwei, bitte", "EYE-nen tish fur tsvy, BIT-teh", "A table for two, please"],
+    ["Wir haben reserviert, auf den Namen …", "veer HAH-ben reh-zer-VEERT, owf dayn NAH-men", "We have a booking under the name … (Figlmüller, Mikata)", "Wir haben reserviert, auf den Namen Oz."],
+    ["Die Speisekarte, bitte", "dee SHPY-zeh-kar-teh, BIT-teh", "The menu, please"],
+    ["Leitungswasser", "LY-toongs-vah-ser", "Tap water – free in Vienna, just ask"],
+    ["Zahlen, bitte!", "TSAH-len, BIT-teh", "The bill, please! (the normal way to ask)"],
+    ["Zusammen oder getrennt?", "tsoo-ZAH-men OH-der geh-TRENT", "Together or separate? – the waiter will ask you this"],
+    ["Mit Karte", "mit KAR-teh", "By card"],
+    ["Stimmt so", "shtimt zoh", "Keep the change – say it while paying, round up ~10%"],
+    ["Zum Mitnehmen", "tsoom MIT-nay-men", "To take away"],
+    ["Pfand", "pfahnt", "Deposit (on Christmas-market mugs)"],
+    ["Pfand zurück, bitte", "pfahnt tsoo-RUK, BIT-teh", "My deposit back, please – when you return the mug"],
+  ]],
+  ["Food & drink", "", [
+    ["Wiener Schnitzel", "VEE-ner SHNIT-sel", "Breaded veal (Figlmüller's classic is pork)"],
+    ["Erdäpfelsalat", "AIRD-ep-fel-zah-laht", "Austrian potato salad"],
+    ["Glühwein", "GLOO-vine", "Mulled wine"],
+    ["Punsch, ohne Alkohol", "poonsh, OH-neh AL-ko-hohl", "Hot punch, alcohol-free"],
+    ["Käsekrainer", "KAY-zeh-kry-ner", "Cheese-filled sausage (Bitzinger)"],
+    ["Kaiserschmarrn", "KY-zer-shmarn", "Shredded pancake with fruit compote"],
+    ["Apfelstrudel", "AHP-fel-shtroo-del", "Apple strudel"],
+    ["Sachertorte", "ZAH-kher-tor-teh", "Chocolate cake"],
+    ["Melange", "meh-LAHNZH", "Vienna's cappuccino"],
+    ["Maroni", "mah-ROH-nee", "Roasted chestnuts"],
+  ]],
+  ["Places – Vienna", "", [
+    ["Drei Kronen, Schleifmühlgasse", "dry KROH-nen, SHLYFE-mool-gah-seh", "Your hotel"],
+    ["Stephansdom", "SHTEH-fahns-dohm", "St. Stephen's Cathedral"],
+    ["Wollzeile · Graben · Kohlmarkt", "VOLL-tsy-leh · GRAH-ben · KOHL-markt", "Shopping streets (Thu)", "Wollzeile, Graben, Kohlmarkt"],
+    ["Figlmüller, Bäckerstraße", "FEE-gl-mul-er, BEK-er-shtrah-seh", "Thursday lunch"],
+    ["Judenplatz · Dorotheergasse", "YOO-den-plahts · doh-roh-TAY-er-gah-seh", "Jewish museums (Thu)", "Judenplatz, Dorotheergasse"],
+    ["Kunsthistorisches Museum", "KOONST-his-TOR-ish-es moo-ZAY-oom", "Art museum – locals say \"KHM\" (kah-hah-em)"],
+    ["Maria-Theresien-Platz", "mah-REE-ah teh-RAY-zee-en-plahts", "Square outside the KHM"],
+    ["Hofburg · Heldenplatz", "HOFE-boork · HEL-den-plahts", "Imperial palace & square", "Hofburg, Heldenplatz"],
+    ["Prunksaal", "PROONK-zahl", "National Library state hall"],
+    ["Rathausplatz", "RAHT-hows-plahts", "City Hall Christmas market"],
+    ["Volksgarten", "FOLKS-gar-ten", "Park between Hofburg and Rathaus"],
+    ["Mikata, Hohenstaufengasse", "mee-KAH-tah, HOH-en-shtow-fen-gah-seh", "Friday lunch"],
+    ["Therme Wien, Oberlaa", "TAIR-meh veen, OH-ber-lah", "The spa (U1 to Oberlaa)"],
+    ["Naschmarkt", "NAHSH-markt", "Food market"],
+    ["Spanische Hofreitschule", "SHPAH-nish-eh HOFE-ryte-shoo-leh", "Spanish Riding School"],
+    ["Karlskirche · Karlsplatz", "KARLS-keer-kheh · KARLS-plahts", "Church & Christmas market", "Karlskirche, Karlsplatz"],
+    ["Belvedere", "bel-veh-DAY-reh", "Palace & Christmas market"],
+    ["Wiener Eislaufverein", "VEE-ner ICE-lowf-fer-ine", "Ice rink"],
+    ["Haus der Musik", "hows dair moo-ZEEK", "Music museum"],
+    ["Spittelberg · Freyung · Am Hof", "SHPIT-el-bairk · FRY-oong · ahm HOFE", "Christmas markets", "Spittelberg, Freyung, Am Hof"],
+    ["Schönbrunn", "SHURN-broon", "Palace (Mon)"],
+    ["Berggasse", "BAIRK-gah-seh", "Freud Museum street"],
+    ["Schottentor", "SHOT-en-tor", "U2 station near Ebi 1"],
+    ["Krieau", "KREE-ow", "U2 stop for BattleKart"],
+    ["Prater · Riesenrad", "PRAH-ter · REE-zen-raht", "Amusement park & Ferris wheel", "Prater, Riesenrad"],
+    ["Praterstern · Praterstraße", "PRAH-ter-shtairn · PRAH-ter-shtrah-seh", "Station & street (Cucina Itameshi)", "Praterstern, Praterstraße"],
+    ["Schwedenplatz", "SHVAY-den-plahts", "U1/U4 hub by the canal"],
+    ["Mariahilfer Straße", "mah-REE-ah-hil-fer SHTRAH-seh", "Main shopping street"],
+    ["Westbahnhof · Hauptbahnhof", "VEST-bahn-hofe · HOWPT-bahn-hofe", "Train stations", "Westbahnhof, Hauptbahnhof"],
+    ["Café Landtmann", "kah-FAY LAHNT-mahn", "Tuesday coffee"],
+  ]],
+  ["Places – Salzburg", "", [
+    ["Mirabellgarten", "mee-rah-BEL-gar-ten", "Mirabell Gardens"],
+    ["Getreidegasse", "geh-TRY-deh-gah-seh", "Old-town street, Mozart's birthplace"],
+    ["Salzach · Makartsteg", "ZAHL-tsakh · MAH-kart-shtayg", "River & footbridge", "Salzach, Makartsteg"],
+    ["Festung Hohensalzburg", "FES-toong HOH-en-zahlts-boork", "The fortress"],
+    ["Festungsbahn", "FES-toongs-bahn", "Funicular up to the fortress"],
+    ["Domplatz · Christkindlmarkt", "DOHM-plahts · KRIST-kin-del-markt", "Cathedral square & Christmas market", "Domplatz, Christkindlmarkt"],
+    ["Perchten", "PAIRKH-ten", "The horned winter demons"],
+  ]],
+  ["Getting around", "", [
+    ["Nächste Station", "NEKH-steh shtah-TSYOHN", "Next stop (U-Bahn announcement)"],
+    ["Ausgang", "OWS-gahng", "Exit"],
+    ["Bahnsteig · Gleis", "BAHN-shtyke · glice", "Platform · track", "Bahnsteig, Gleis"],
+    ["Umsteigen", "OOM-shty-gen", "Change trains"],
+    ["Zug nach Salzburg", "tsook nahkh ZAHLTS-boork", "Train to Salzburg"],
+  ]],
+];
+
+const CAN_SPEAK = "speechSynthesis" in window && typeof SpeechSynthesisUtterance !== "undefined";
+let SPEAKING = null;
+function germanVoice() {
+  const vs = CAN_SPEAK ? speechSynthesis.getVoices() : [];
+  return vs.find(v => /^de[-_]AT/i.test(v.lang)) || vs.find(v => /^de[-_]DE/i.test(v.lang) && /google|anna|helena|katja/i.test(v.name)) || vs.find(v => /^de/i.test(v.lang)) || null;
+}
+function speak(text, btn) {
+  if (!CAN_SPEAK) return;
+  speechSynthesis.cancel();
+  document.querySelectorAll(".ph .play.on").forEach(b => b.classList.remove("on"));
+  if (SPEAKING === text) { SPEAKING = null; return; } // tap again to stop
+  const u = new SpeechSynthesisUtterance(text);
+  const v = germanVoice(); if (v) u.voice = v;
+  u.lang = v?.lang || "de-AT"; u.rate = UI.slowSpeech ? 0.6 : 0.9;
+  u.onend = u.onerror = () => { btn.classList.remove("on"); SPEAKING = null; };
+  SPEAKING = text; btn.classList.add("on");
+  speechSynthesis.speak(u);
+}
+if (CAN_SPEAK) speechSynthesis.onvoiceschanged = () => renderPhrases(); // voices load late on some phones
+const PLAY_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9H3z"/><path d="M15.5 8.5a5 5 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 5.5a9 9 0 0 1 0 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+function renderPhrases() {
+  const sec = $("#viewPhr"), slow = !!UI.slowSpeech, voice = germanVoice();
+  const sayHtml = t => { const n = document.createElement("div"); n.className = "say";
+    for (const part of t.split(/(\b[A-ZÄÖÜ]{2,}\b)/)) n.append(/^[A-ZÄÖÜ]{2,}$/.test(part) ? el("b", {}, part) : part); return n; };
+  sec.replaceChildren(...[
+    el("h2", {}, "Phrases"),
+    el("p", { class: "ph-note" }, CAN_SPEAK
+      ? (voice ? `Tap 🔊 to hear it in German (${voice.name}). CAPS in the hint = the stressed part.`
+               : "Tap 🔊 to hear it. If it sounds English, add a German voice in your phone's text-to-speech settings.")
+      : "This browser can't play speech – the written hints still work."),
+    CAN_SPEAK ? el("div", { class: "pk-tools" }, el("button", { type: "button", "aria-pressed": String(slow),
+      onclick: () => { UI.slowSpeech = !slow; writeUI(UI); renderPhrases(); } }, slow ? "Slow speech: on" : "Slow speech: off")) : null,
+    ...PHRASES.flatMap(([title, sub, rows, isRules]) => [
+      el("div", { class: "grp" }, title), sub ? el("p", { class: "ph-note" }, sub) : null,
+      ...rows.map(r => {
+        const [de, say, mean, spoken] = isRules ? [r[0], r[1], "", r[2]] : r;
+        const btn = CAN_SPEAK ? el("button", { type: "button", class: "play", "aria-label": `Play: ${spoken || de}`,
+          onclick: e => speak(spoken || de, e.currentTarget) }, svg(PLAY_ICON)) : el("span");
+        return el("div", { class: "ph" }, btn,
+          el("div", {}, el("div", { class: "de", lang: isRules ? "en" : "de" }, de), sayHtml(say)),
+          mean ? el("div", { class: "mean" }, mean) : null);
+      })]),
+  ].filter(Boolean));
+}
+
 function setView(v) {
-  if (!["days", "book", "pack"].includes(v)) v = "days";
-  for (const [k, tab, view] of [["days", "#tabDays", "#viewDays"], ["book", "#tabBook", "#viewBook"], ["pack", "#tabPack", "#viewPack"]]) {
+  if (!["days", "book", "pack", "phr"].includes(v)) v = "days";
+  for (const [k, tab, view] of [["days", "#tabDays", "#viewDays"], ["book", "#tabBook", "#viewBook"], ["pack", "#tabPack", "#viewPack"], ["phr", "#tabPhr", "#viewPhr"]]) {
     $(tab).setAttribute("aria-selected", String(v === k)); $(view).hidden = v !== k;
   }
   UI.view = v; writeUI(UI);
@@ -690,10 +850,12 @@ function setView(v) {
 $("#tabDays").onclick = () => setView("days");
 $("#tabBook").onclick = () => setView("book");
 $("#tabPack").onclick = () => setView("pack");
+$("#tabPhr").onclick = () => setView("phr");
 $("#refresh").onclick = () => load(true);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && SOURCE && Date.now() - (SOURCE.at || 0) > 5 * 60e3) load(); });
 setInterval(() => { if (MODEL && !document.hidden) renderDay(MODEL.days.find(d => d.col === current)); }, 60e3);
 
+renderPhrases(); // static content, works even before the sheet loads
 setView(UI.view || "days");
 // show the saved copy instantly, then fetch fresh data
 (() => { const c = readCache(); if (c) { try { MODEL = parse(c.raw); SOURCE = { kind: "cache", at: c.at }; render(); } catch {} } })();
