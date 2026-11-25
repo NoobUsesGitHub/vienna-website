@@ -152,6 +152,16 @@ button.check.pending{opacity:.5;cursor:progress}
 .pk-tools{display:flex;justify-content:flex-end;margin-top:-6px}
 .pk-tools button{border:1px solid var(--rule);background:var(--surface);color:var(--fg);border-radius:999px;padding:6px 12px;font:600 .85rem/1 var(--font-display);cursor:pointer}
 .pk-tools button[aria-pressed="true"]{background:var(--fg);color:var(--surface);border-color:var(--fg)}
+/* quests */
+.qscore{display:flex;align-items:baseline;gap:10px;margin:2px 0 4px}
+.qscore b{font:800 2.2rem/1 var(--font-display);color:var(--accent)}
+.qscore span{color:var(--muted);font-size:.9rem}
+.qday{display:flex;align-items:center;gap:8px}
+.qday .today{font:700 .7rem/1 var(--font-display);letter-spacing:.1em;padding:3px 7px;border-radius:999px;background:var(--accent);color:var(--accent-fg)}
+.qday .clear{font:700 .7rem/1 var(--font-display);letter-spacing:.1em;padding:3px 7px;border-radius:999px;background:var(--good);color:var(--surface)}
+.pts{font:800 .8rem/1 var(--font-display);color:var(--accent);white-space:nowrap}
+.bitem details{margin-top:6px;font-size:.88rem}
+.bitem summary{cursor:pointer;color:var(--muted);font-weight:600}
 /* phrases */
 .ph{display:grid;grid-template-columns:44px 1fr;gap:4px 12px;align-items:center;background:var(--surface);border:1px solid var(--rule);border-radius:14px;padding:10px 12px;margin-bottom:8px}
 .ph .play{width:44px;height:44px;border-radius:50%;border:0;background:var(--accent);color:var(--accent-fg);display:grid;place-items:center;cursor:pointer;grid-row:span 2}
@@ -184,7 +194,8 @@ footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:cent
     <div class="views" role="tablist">
       <button role="tab" id="tabDays" aria-selected="true" type="button">Itinerary</button>
       <button role="tab" id="tabBook" aria-selected="false" type="button">To book</button>
-      <button role="tab" id="tabPack" aria-selected="false" type="button">Packing</button>
+      <button role="tab" id="tabPack" aria-selected="false" type="button" hidden>Packing</button>
+      <button role="tab" id="tabQuest" aria-selected="false" type="button">Quests</button>
       <button role="tab" id="tabPhr" aria-selected="false" type="button">Phrases</button>
     </div>
   </div>
@@ -199,6 +210,7 @@ footer{color:var(--muted);font-size:.8rem;padding-block:8px 40px;text-align:cent
   </section>
   <section id="viewBook" class="bk" hidden></section>
   <section id="viewPack" class="bk" hidden></section>
+  <section id="viewQuest" class="bk" hidden></section>
   <section id="viewPhr" class="bk" hidden lang="en"></section>
   <footer id="foot"></footer>
 </main>
@@ -211,7 +223,7 @@ const CONFIG = {
   // Apps Script web app URL (ends in /exec) that lets the To book checkboxes write back to the sheet.
   // Leave empty to keep the boxes view-only.
   WRITE_URL: "https://script.google.com/macros/s/AKfycbzOqTWmR9sIrcOrQ6AMUoDVYxbjJzLLd23CWeC_tdMwlOap1XNKh1rlZO5RkULV4-o4/exec",
-  TABS: { plan: "Vienna plan v3", info: "Explanations", book: "Book in advance", pack: "Packing" },
+  TABS: { plan: "Vienna plan v3", info: "Explanations", book: "Book in advance", pack: "Packing", quest: "Quests" },
   TIMEZONE: "Europe/Vienna",
   YEAR: 2026,
 };
@@ -265,17 +277,17 @@ function apiUrl() {
   return `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}?${p}`;
 }
 // The packing list is fetched on its own, so a missing or renamed Packing tab can't break the itinerary.
-function packUrl() {
+function packUrl(tab = CONFIG.TABS.pack) {
   const p = new URLSearchParams();
-  p.append("ranges", `'${CONFIG.TABS.pack}'!A1:H150`);
+  p.append("ranges", `'${tab}'!A1:H200`);
   p.set("includeGridData", "true");
   p.set("fields", "sheets(properties(title),data(rowData(values(formattedValue,effectiveValue/boolValue))))");
   p.set("key", CONFIG.API_KEY);
   return `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}?${p}`;
 }
-async function fetchPacking() {
+async function fetchPacking(tab = CONFIG.TABS.pack) {
   try {
-    const res = await fetch(packUrl(), { cache: "no-store" });
+    const res = await fetch(packUrl(tab), { cache: "no-store" });
     if (!res.ok) return [];
     return (await res.json()).sheets || [];
   } catch { return []; }
@@ -300,7 +312,8 @@ async function load(manual) {
       throw Object.assign(new Error(msg), { code: res.status });
     }
     const raw = await res.json();
-    raw.sheets.push(...await fetchPacking());
+    const [pk, qs] = await Promise.all([fetchPacking(CONFIG.TABS.pack), fetchPacking(CONFIG.TABS.quest)]);
+    raw.sheets.push(...pk, ...qs);
     MODEL = parse(raw);
     writeCache(raw);
     SOURCE = { kind: "live", at: Date.now() };
@@ -435,7 +448,17 @@ function parse(raw) {
     done: !!r[pi.done]?.effectiveValue?.boolValue, hasBox: r[pi.done]?.effectiveValue?.boolValue !== undefined,
   })).filter(x => x.what);
 
-  return { days, hotelText, bookings, packing };
+  // quests: Day | Quest | Where | Points | Done? | Tip
+  const qr = rows(sheetByTitle(raw, CONFIG.TABS.quest));
+  const qh = (qr[0] || []).map(t => txt(t).toLowerCase()), qc = n => qh.findIndex(h => h.startsWith(n));
+  const qi = { day: qc("day"), what: qc("quest"), where: qc("where"), pts: qc("point"), done: qc("done"), tip: qc("tip") };
+  const quests = qi.what < 0 ? [] : qr.slice(1).map((r, i) => ({
+    row: i + 2, day: txt(r[qi.day]), what: txt(r[qi.what]), where: txt(r[qi.where]), tip: txt(r[qi.tip]),
+    pts: Math.round(Number(txt(r[qi.pts])) || 0),
+    done: !!r[qi.done]?.effectiveValue?.boolValue, hasBox: r[qi.done]?.effectiveValue?.boolValue !== undefined,
+  })).filter(x => x.what);
+
+  return { days, hotelText, bookings, packing, quests };
 }
 
 /* ---------------------------- time ---------------------------- */
@@ -457,10 +480,10 @@ function dayClock(day) {
 /* ---------------------------- render ---------------------------- */
 function render() {
   renderStatus();
-  if (!MODEL) { $("#days").replaceChildren(); $("#dayview").replaceChildren(); $("#nowbox").replaceChildren(); $("#viewBook").replaceChildren(); $("#viewPack").replaceChildren(); return; }
+  if (!MODEL) { $("#days").replaceChildren(); $("#dayview").replaceChildren(); $("#nowbox").replaceChildren(); $("#viewBook").replaceChildren(); $("#viewPack").replaceChildren(); $("#viewQuest").replaceChildren(); return; }
   const hotel = MODEL.hotelText.split("\n")[0];
   $("#sub").textContent = (hotel ? hotel + " · " : "") + rangeText();
-  renderDays(); renderBook(); renderPack();
+  renderDays(); renderBook(); renderPack(); renderQuests();
   $("#foot").replaceChildren(el("span", {}, "Edits come from the Google Sheet. Tap ", el("b", {}, "↻"), " to reload."));
 }
 function rangeText() {
@@ -692,6 +715,64 @@ async function togglePack(x) {
   }
 }
 
+/* ---------------------------- quests ---------------------------- */
+let QUEST_ERR = "";
+const questDate = d => { const m = /(\d{1,2})\.(\d{1,2})/.exec(d || ""); return m ? `${+m[2]}-${+m[1]}` : ""; };
+function renderQuests() {
+  const sec = $("#viewQuest"), list = MODEL.quests || [];
+  if (!list.length) {
+    sec.replaceChildren(el("h2", {}, "Quests"), el("div", { class: "empty" }, `Add a "${CONFIG.TABS.quest}" tab to the sheet to see the quests here.`));
+    return;
+  }
+  const now = viennaNow().date, todayKey = `${now.getMonth() + 1}-${now.getDate()}`;
+  const boxes = list.filter(x => x.hasBox), done = boxes.filter(x => x.done);
+  const score = done.reduce((a, x) => a + x.pts, 0), max = boxes.reduce((a, x) => a + x.pts, 0);
+  const groups = [];
+  for (const x of list) { let g = groups.find(g => g.name === x.day); if (!g) groups.push(g = { name: x.day, items: [] }); g.items.push(x); }
+  const ti = groups.findIndex(g => questDate(g.name) === todayKey);
+  if (ti > 0) groups.unshift(...groups.splice(ti, 1)); // today's quests first
+  const hide = !!UI.hideQuestsDone;
+  const box = x => x.hasBox ? (canWrite()
+      ? el("button", { type: "button", class: "check" + (x.pending ? " pending" : ""), role: "checkbox", "aria-checked": String(x.done),
+          "aria-label": x.what, disabled: x.pending, onclick: () => toggleQuest(x) }, x.done ? svg(ICON.check) : null)
+      : el("span", { class: "check", "aria-label": x.done ? "Done" : "Not done yet" }, x.done ? svg(ICON.check) : null)) : el("span");
+  sec.replaceChildren(...[
+    el("h2", {}, "Quests"),
+    el("div", { class: "qscore" }, el("b", {}, `${score}`), el("span", {}, `of ${max} points · ${done.length}/${boxes.length} quests`)),
+    QUEST_ERR ? el("div", { class: "berr", role: "alert" }, QUEST_ERR) : null,
+    el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(max), "aria-valuenow": String(score) },
+      el("i", { style: `width:${max ? (100 * score / max) : 0}%` })),
+    el("div", { class: "pk-tools" }, el("button", { type: "button", "aria-pressed": String(hide),
+      onclick: () => { UI.hideQuestsDone = !hide; writeUI(UI); renderQuests(); } }, hide ? "Show completed" : "Hide completed")),
+    ...groups.flatMap(g => {
+      const gb = g.items.filter(x => x.hasBox), gd = gb.filter(x => x.done);
+      const gp = gd.reduce((a, x) => a + x.pts, 0), gm = gb.reduce((a, x) => a + x.pts, 0);
+      const shown = hide ? g.items.filter(x => !x.done || x.pending) : g.items;
+      const isToday = questDate(g.name) === todayKey, clear = gb.length && gd.length === gb.length;
+      return [el("div", { class: "grp qday" }, g.name || "Any day", isToday ? el("span", { class: "today" }, "Today") : null,
+          clear ? el("span", { class: "clear" }, "Day cleared!") : null, gm ? el("span", { class: "n", style: "margin-left:auto" }, `${gp}/${gm} pts`) : null),
+        ...shown.map(x => el("div", { class: "bitem" + (x.done ? " done" : "") }, box(x),
+          el("div", { style: "min-width:0" },
+            el("div", { class: "ttl" }, x.what),
+            el("div", { class: "meta" }, x.where ? el("span", {}, x.where) : null, x.pts ? el("span", { class: "pts" }, `+${x.pts} pts`) : null),
+            x.tip ? el("details", {}, el("summary", {}, "Hint"), el("p", {}, x.tip)) : null)))];
+    })].filter(Boolean)); // replaceChildren would print null as text
+}
+async function toggleQuest(x) {
+  if (x.pending) return;
+  const want = !x.done;
+  x.done = want; x.pending = true; QUEST_ERR = ""; renderQuests();
+  try {
+    await writeBack({ tab: CONFIG.TABS.quest, row: x.row, what: x.what, done: want });
+    x.pending = false; renderQuests();
+    load(); // refresh the saved copy so the change survives offline
+  } catch (e) {
+    x.done = !want; x.pending = false;
+    QUEST_ERR = `Couldn't update the sheet: ${e.message}. Try again, or tick it in the sheet.`;
+    renderQuests();
+  }
+}
+
 /* ---------------------------- phrases ---------------------------- */
 // [German, how to say it (CAPS = stress), meaning, optional text to speak instead]
 const PHRASES = [
@@ -841,8 +922,8 @@ function renderPhrases() {
 }
 
 function setView(v) {
-  if (!["days", "book", "pack", "phr"].includes(v)) v = "days";
-  for (const [k, tab, view] of [["days", "#tabDays", "#viewDays"], ["book", "#tabBook", "#viewBook"], ["pack", "#tabPack", "#viewPack"], ["phr", "#tabPhr", "#viewPhr"]]) {
+  if (!["days", "book", "quest", "phr"].includes(v)) v = "days"; // Packing is hidden for the trip
+  for (const [k, tab, view] of [["days", "#tabDays", "#viewDays"], ["book", "#tabBook", "#viewBook"], ["pack", "#tabPack", "#viewPack"], ["quest", "#tabQuest", "#viewQuest"], ["phr", "#tabPhr", "#viewPhr"]]) {
     $(tab).setAttribute("aria-selected", String(v === k)); $(view).hidden = v !== k;
   }
   UI.view = v; writeUI(UI);
@@ -851,6 +932,7 @@ $("#tabDays").onclick = () => setView("days");
 $("#tabBook").onclick = () => setView("book");
 $("#tabPack").onclick = () => setView("pack");
 $("#tabPhr").onclick = () => setView("phr");
+$("#tabQuest").onclick = () => setView("quest");
 $("#refresh").onclick = () => load(true);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && SOURCE && Date.now() - (SOURCE.at || 0) > 5 * 60e3) load(); });
 setInterval(() => { if (MODEL && !document.hidden) renderDay(MODEL.days.find(d => d.col === current)); }, 60e3);
