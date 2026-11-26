@@ -324,7 +324,7 @@ async function load(manual) {
     else { SOURCE = { kind: "none", err: e }; }
   } finally {
     loading = false; $("#refresh").classList.remove("spin");
-    render();
+    render(); JUMP = false;
   }
 }
 
@@ -484,6 +484,7 @@ function render() {
   const hotel = MODEL.hotelText.split("\n")[0];
   $("#sub").textContent = (hotel ? hotel + " · " : "") + rangeText();
   renderDays(); renderBook(); renderPack(); renderQuests();
+  if (JUMP) jumpToNow();
   $("#foot").replaceChildren(el("span", {}, "Edits come from the Google Sheet. Tap ", el("b", {}, "↻"), " to reload."));
 }
 function rangeText() {
@@ -527,14 +528,51 @@ function renderDays() {
     const isToday = dkey(d.date) === today;
     const over = d.items.length && dayClock(d) >= Math.max(...d.items.map(i => i.end));
     const b = el("button", { class: "day" + (isToday ? " today" : "") + (over ? " over" : ""), type: "button", "aria-selected": String(d.col === current),
-      onclick: () => { current = d.col; UI.day = d.col; writeUI(UI); renderDays(); window.scrollTo({ top: 0 }); } },
+      onclick: () => { current = d.col; UI.day = d.col; writeUI(UI); renderDays(); if (isToday) scrollToNow(); else window.scrollTo(0, 0); } },
       el("span", { class: "badge", style: `background:${d.line.c}` }, d.line.b),
       el("span", { class: "dl" }, el("b", {}, d.date.toLocaleDateString("en-GB", { weekday: "short" }) + " " + d.date.getDate()),
         el("span", {}, isToday ? "Today" : d.date.toLocaleDateString("en-GB", { month: "short" }))));
     return b;
   }));
-  const sel = $("#days").querySelector('[aria-selected="true"]'); sel?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  stripTo(false);
   renderDay(MODEL.days.find(d => d.col === current));
+}
+
+// Google Maps links can carry extra stops ("waypoints"); show them so a walk-through route is obvious
+function viaOf(url) {
+  try { const w = new URL(url).searchParams.get("waypoints"); return w ? w.split("|").map(x => x.split(",")[0].trim()).filter(Boolean).join(", ") : ""; } catch { return ""; }
+}
+
+/* ---------- open on today and on what's happening now ---------- */
+let JUMP = true, HIDDEN_AT = 0, LAST_INPUT = 0; // JUMP: scroll to "now" on the next render (on open / when coming back to the app)
+for (const ev of ["touchstart", "wheel", "keydown", "mousedown"]) addEventListener(ev, () => { JUMP = false; LAST_INPUT = Date.now(); }, { passive: true, capture: true });
+function todayCol() { const t = dkey(viennaNow().date); return MODEL?.days.find(d => dkey(d.date) === t)?.col ?? null; }
+// slide the day strip so the selected day is visible; atStart = put it first (past days slide off to the left)
+function stripTo(atStart) {
+  const strip = $("#days"), sel = strip.querySelector('[aria-selected="true"]'); if (!sel) return;
+  const s = strip.getBoundingClientRect(), r = sel.getBoundingClientRect();
+  if (atStart || r.left < s.left) strip.scrollLeft += r.left - s.left;
+  else if (r.right > s.right) strip.scrollLeft += r.right - s.right;
+}
+// scroll the page so the current stop (or the next one) sits just under the header
+function scrollToNow() {
+  const asked = Date.now();
+  const go = () => {
+    const list = $("#dayview .tl"); if (!list) return;
+    const target = list.querySelector("li.current") || list.querySelector("li:not(.past)");
+    if (!target || !list.querySelector("li.past")) { window.scrollTo(0, 0); return; } // nothing over yet: start at the top
+    const y = target.getBoundingClientRect().top + window.scrollY - $("header").getBoundingClientRect().height - 12;
+    window.scrollTo(0, Math.max(0, y));
+  };
+  go();
+  // the web fonts can change line heights once they arrive; line up again unless the user has started scrolling
+  document.fonts?.ready.then(() => { if (LAST_INPUT <= asked) go(); });
+}
+function jumpToNow() {
+  if (!MODEL || UI.view !== "days") return;
+  const t = todayCol(); if (t == null) return; // not a trip day
+  if (current !== t) { current = t; renderDays(); }
+  stripTo(true); scrollToNow();
 }
 
 function travelLine(it) {
@@ -544,7 +582,8 @@ function travelLine(it) {
 }
 function routeBtn(it, label) {
   if (!it.url) return null;
-  return el("a", { class: "btn", href: it.url, target: "_blank", rel: "noopener" }, svg(ICON.route), label || "Directions");
+  const via = viaOf(it.url);
+  return el("a", { class: "btn", href: it.url, target: "_blank", rel: "noopener" }, svg(ICON.route), via ? `Route via ${via}` : label || "Directions");
 }
 function findBtn(it) {
   const q = encodeURIComponent(it.label.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B50}\u{FE0F}]/gu, "").replace(/\(.*?\)/g, "").trim() + " Wien");
@@ -585,7 +624,7 @@ function renderDay(day) {
         el("span", { class: "ico", "aria-hidden": "true" }, svg(/walk/i.test(it.label) || it.travel?.mode === "walk" ? ICON.walk : ICON.ride)),
         el("div", { class: "lg" }, el("b", { dir: "auto" }, it.label),
           el("span", {}, it.travel?.mins ? it.travel.mins : `${it.end - it.start} min`),
-          it.url ? el("a", { href: it.url, target: "_blank", rel: "noopener" }, "Directions ›") : null,
+          it.url ? el("a", { href: it.url, target: "_blank", rel: "noopener" }, viaOf(it.url) ? `Directions via ${viaOf(it.url)} ›` : "Directions ›") : null,
           it.hint ? el("span", { style: "flex-basis:100%" }, it.hint) : null,
           it.desc ? el("span", { style: "flex-basis:100%" }, it.desc) : null)));
       continue;
@@ -928,13 +967,18 @@ function setView(v) {
   }
   UI.view = v; writeUI(UI);
 }
-$("#tabDays").onclick = () => setView("days");
+$("#tabDays").onclick = () => { const was = UI.view; setView("days"); if (was !== "days") jumpToNow(); };
 $("#tabBook").onclick = () => setView("book");
 $("#tabPack").onclick = () => setView("pack");
 $("#tabPhr").onclick = () => setView("phr");
 $("#tabQuest").onclick = () => setView("quest");
 $("#refresh").onclick = () => load(true);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && SOURCE && Date.now() - (SOURCE.at || 0) > 5 * 60e3) load(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { HIDDEN_AT = Date.now(); return; }
+  if (HIDDEN_AT && Date.now() - HIDDEN_AT > 60e3) JUMP = true; // away for over a minute: open on "now" again
+  if (SOURCE && Date.now() - (SOURCE.at || 0) > 5 * 60e3) load();
+  else if (JUMP && MODEL) { renderDays(); jumpToNow(); JUMP = false; }
+});
 setInterval(() => { if (MODEL && !document.hidden) renderDay(MODEL.days.find(d => d.col === current)); }, 60e3);
 
 renderPhrases(); // static content, works even before the sheet loads
